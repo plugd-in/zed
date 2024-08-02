@@ -1645,7 +1645,6 @@ pub async fn spawn_ssh_task(
         Some((&command, &args)),
         None,
         HashMap::default(),
-        None,
     );
 
     let terminal = terminal_panel

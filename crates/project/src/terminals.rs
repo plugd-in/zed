@@ -119,18 +119,9 @@ impl Project {
         } else {
             None
         };
-        let python_venv_directory = path
-            .as_ref()
-            .and_then(|path| self.python_venv_directory(path, settings, cx));
-        let mut python_venv_activate_command = None;
 
         let (spawn_task, shell) = match kind {
             TerminalKind::Shell(_) => {
-                if let Some(python_venv_directory) = python_venv_directory {
-                    python_venv_activate_command =
-                        self.python_activate_command(&python_venv_directory, settings);
-                }
-
                 match &ssh_command {
                     Some(ssh_command) => {
                         log::debug!("Connecting to a remote server: {ssh_command:?}");
@@ -143,7 +134,7 @@ impl Project {
                             .or_insert_with(|| "xterm-256color".to_string());
 
                         let (program, args) =
-                            wrap_for_ssh(ssh_command, None, path.as_deref(), env, None);
+                            wrap_for_ssh(ssh_command, None, path.as_deref(), env);
                         env = HashMap::default();
                         (None, Shell::WithArguments { program, args })
                     }
@@ -163,13 +154,6 @@ impl Project {
 
                 env.extend(spawn_task.env);
 
-                if let Some(venv_path) = &python_venv_directory {
-                    env.insert(
-                        "VIRTUAL_ENV".to_string(),
-                        venv_path.to_string_lossy().to_string(),
-                    );
-                }
-
                 match &ssh_command {
                     Some(ssh_command) => {
                         log::debug!("Connecting to a remote server: {ssh_command:?}");
@@ -180,16 +164,11 @@ impl Project {
                             Some((&spawn_task.command, &spawn_task.args)),
                             path.as_deref(),
                             env,
-                            python_venv_directory,
                         );
                         env = HashMap::default();
                         (task_state, Shell::WithArguments { program, args })
                     }
                     None => {
-                        if let Some(venv_path) = &python_venv_directory {
-                            add_environment_path(&mut env, &venv_path.join("bin")).log_err();
-                        }
-
                         (
                             task_state,
                             Shell::WithArguments {
@@ -235,9 +214,6 @@ impl Project {
             })
             .detach();
 
-            if let Some(activate_command) = python_venv_activate_command {
-                self.activate_python_virtual_environment(activate_command, &terminal_handle, cx);
-            }
             terminal_handle
         });
 
@@ -264,40 +240,6 @@ impl Project {
             })
     }
 
-    fn python_activate_command(
-        &self,
-        venv_base_directory: &Path,
-        settings: &TerminalSettings,
-    ) -> Option<String> {
-        let venv_settings = settings.detect_venv.as_option()?;
-        let activate_script_name = match venv_settings.activate_script {
-            terminal_settings::ActivateScript::Default => "activate",
-            terminal_settings::ActivateScript::Csh => "activate.csh",
-            terminal_settings::ActivateScript::Fish => "activate.fish",
-            terminal_settings::ActivateScript::Nushell => "activate.nu",
-        };
-        let path = venv_base_directory
-            .join("bin")
-            .join(activate_script_name)
-            .to_string_lossy()
-            .to_string();
-        let quoted = shlex::try_quote(&path).ok()?;
-
-        Some(match venv_settings.activate_script {
-            terminal_settings::ActivateScript::Nushell => format!("overlay use {}\n", quoted),
-            _ => format!("source {}\n", quoted),
-        })
-    }
-
-    fn activate_python_virtual_environment(
-        &self,
-        command: String,
-        terminal_handle: &Model<Terminal>,
-        cx: &mut ModelContext<Project>,
-    ) {
-        terminal_handle.update(cx, |this, _| this.input_bytes(command.into_bytes()));
-    }
-
     pub fn local_terminal_handles(&self) -> &Vec<WeakModel<terminal::Terminal>> {
         &self.terminals.local_handles
     }
@@ -308,7 +250,6 @@ pub fn wrap_for_ssh(
     command: Option<(&String, &Vec<String>)>,
     path: Option<&Path>,
     env: HashMap<String, String>,
-    venv_directory: Option<PathBuf>,
 ) -> (String, Vec<String>) {
     let to_run = if let Some((command, args)) = command {
         iter::once(command)
@@ -323,11 +264,6 @@ pub fn wrap_for_ssh(
     for (k, v) in env.iter() {
         if let Some((k, v)) = shlex::try_quote(k).ok().zip(shlex::try_quote(v).ok()) {
             env_changes.push_str(&format!("{}={} ", k, v));
-        }
-    }
-    if let Some(venv_directory) = venv_directory {
-        if let Some(str) = shlex::try_quote(venv_directory.to_string_lossy().as_ref()).ok() {
-            env_changes.push_str(&format!("PATH={}:$PATH ", str));
         }
     }
 
